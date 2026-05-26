@@ -8,6 +8,20 @@ app.get("/", (req, res) => {
   res.send("서버 정상작동!");
 });
 
+function normalize(url) {
+  return (url || "")
+    .toString()
+    .trim()
+    .replace(/&amp;/g, "&")
+    .replace(/^http:\/\//, "https://")
+    .replace(/[?#].*$/, "")
+    .replace(/\/$/, "");
+}
+
+function unique(arr) {
+  return [...new Set(arr.filter(Boolean))];
+}
+
 app.post("/search", async (req, res) => {
   try {
     const keyword = req.body.keyword || "";
@@ -25,12 +39,43 @@ app.post("/search", async (req, res) => {
 
     const html = await response.text();
 
+    const hrefMatches = [...html.matchAll(/href=["']([^"']+)["']/gi)];
+
+    const allLinks = unique(
+      hrefMatches
+        .map((m) => normalize(m[1]))
+        .filter((link) =>
+          link.includes("blog.naver.com/") ||
+          link.includes("m.blog.naver.com/") ||
+          link.includes("cafe.naver.com/")
+        )
+        .filter((link) =>
+          !link.includes("search.naver.com") &&
+          !link.includes("adcr") &&
+          !link.includes("javascript")
+        )
+    );
+
+    const blogLinks = allLinks
+      .filter((link) =>
+        link.includes("blog.naver.com/") ||
+        link.includes("m.blog.naver.com/")
+      )
+      .slice(0, 10);
+
+    const cafeLinks = allLinks
+      .filter((link) => link.includes("cafe.naver.com/"))
+      .slice(0, 10);
+
     res.json({
       success: true,
       keyword,
       searchUrl,
       htmlLength: html.length,
-      preview: html.slice(0, 500)
+      totalLinks: allLinks.length,
+      blogLinks,
+      cafeLinks,
+      allLinks: allLinks.slice(0, 20)
     });
   } catch (error) {
     res.status(500).json({
