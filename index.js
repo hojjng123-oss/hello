@@ -23,7 +23,9 @@ function unique(arr) {
 }
 
 app.post("/search", async (req, res) => {
+
   try {
+
     const keyword = req.body.keyword || "";
 
     const searchUrl =
@@ -39,7 +41,9 @@ app.post("/search", async (req, res) => {
 
     const html = await response.text();
 
-    const hrefMatches = [...html.matchAll(/href=["']([^"']+)["']/gi)];
+    const hrefMatches = [
+      ...html.matchAll(/href=["']([^"']+)["']/gi)
+    ];
 
     const allLinks = unique(
       hrefMatches
@@ -56,15 +60,25 @@ app.post("/search", async (req, res) => {
         )
     );
 
-    const blogLinks = allLinks
+    const postLinks = unique(
+      allLinks.filter((link) =>
+        /^https:\/\/blog\.naver\.com\/[^\/]+\/\d+$/.test(link) ||
+        /^https:\/\/m\.blog\.naver\.com\/[^\/]+\/\d+$/.test(link) ||
+        /^https:\/\/cafe\.naver\.com\/[^\/]+\/\d+$/.test(link)
+      )
+    );
+
+    const blogLinks = postLinks
       .filter((link) =>
         link.includes("blog.naver.com/") ||
         link.includes("m.blog.naver.com/")
       )
       .slice(0, 10);
 
-    const cafeLinks = allLinks
-      .filter((link) => link.includes("cafe.naver.com/"))
+    const cafeLinks = postLinks
+      .filter((link) =>
+        link.includes("cafe.naver.com/")
+      )
       .slice(0, 10);
 
     res.json({
@@ -72,17 +86,21 @@ app.post("/search", async (req, res) => {
       keyword,
       searchUrl,
       htmlLength: html.length,
-      totalLinks: allLinks.length,
+      totalLinks: postLinks.length,
       blogLinks,
       cafeLinks,
-      allLinks: allLinks.slice(0, 20)
+      allLinks: postLinks.slice(0, 20)
     });
+
   } catch (error) {
+
     res.status(500).json({
       success: false,
       error: error.message
     });
+
   }
+
 });
 
 const PORT = process.env.PORT || 8080;
