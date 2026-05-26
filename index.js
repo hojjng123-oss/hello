@@ -2,23 +2,41 @@ const express = require("express");
 const { chromium } = require("playwright");
 
 const app = express();
+
 app.use(express.json());
 
 app.get("/", (req, res) => {
-  res.send("PLAYWRIGHT SERVER RUNNING");
+  res.send("PLAYWRIGHT MOBILE BLOG PARSER RUNNING");
 });
 
 function countKeyword(text, keyword) {
   if (!keyword) return 0;
 
   const safeKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
   return (text.match(new RegExp(safeKeyword, "g")) || []).length;
 }
 
+function convertToMobileBlog(url) {
+
+  const match = url.match(
+    /^https:\/\/blog\.naver\.com\/([^\/]+)\/(\d+)$/
+  );
+
+  if (!match) return url;
+
+  const blogId = match[1];
+  const logNo = match[2];
+
+  return `https://m.blog.naver.com/${blogId}/${logNo}`;
+}
+
 app.post("/search", async (req, res) => {
+
   let browser;
 
   try {
+
     const keyword = req.body.keyword || "";
     const targetType = (req.body.targetType || "blog").toLowerCase();
 
@@ -29,8 +47,11 @@ app.post("/search", async (req, res) => {
 
     const page = await browser.newPage({
       userAgent:
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
-      viewport: { width: 1366, height: 900 }
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 Version/16.0 Mobile/15E148 Safari/604.1",
+      viewport: {
+        width: 390,
+        height: 844
+      }
     });
 
     const searchUrl =
@@ -45,82 +66,110 @@ app.post("/search", async (req, res) => {
     await page.waitForTimeout(3000);
 
     const links = await page.$$eval("a", (els, targetType) => {
+
       return els
         .map((el) => el.href)
         .filter((href) => {
+
           if (!href) return false;
 
           if (targetType === "blog") {
+
             return (
               href.includes("blog.naver.com/") &&
               /\/\d+/.test(href)
             );
+
           }
 
           if (targetType === "cafe") {
+
             return (
               href.includes("cafe.naver.com/") &&
               /\/\d+/.test(href)
             );
+
           }
 
           return false;
+
         });
+
     }, targetType);
 
     const uniqueLinks = [...new Set(links)];
+
     const topUrl = uniqueLinks[0];
 
     if (!topUrl) {
+
       return res.json({
         success: false,
-        keyword,
-        targetType,
         message: "상위 링크를 찾지 못했습니다."
       });
+
     }
 
-    await page.goto(topUrl, {
+    const mobileUrl = convertToMobileBlog(topUrl);
+
+    await page.goto(mobileUrl, {
       waitUntil: "networkidle",
       timeout: 60000
     });
 
     await page.waitForTimeout(5000);
 
-    const frame = page.frame({ name: "mainFrame" });
-    const targetPage = frame || page;
-
     let title = "";
     let content = "";
     let debugSelector = "";
 
     try {
-      title = await targetPage.title();
+
+      title = await page
+        .locator(".se_textarea")
+        .first()
+        .innerText({ timeout: 5000 });
+
     } catch (e) {
-      title = "";
+
+      try {
+
+        title = await page.title();
+
+      } catch (e2) {}
+
     }
 
     const selectors = [
       ".se-main-container",
-      "#postViewArea",
-      ".se_component_wrap",
-      ".post-view",
       ".post_ct",
+      ".se_component_wrap",
+      ".post_view",
+      ".end_container",
       "body"
     ];
 
     for (const selector of selectors) {
+
       try {
-        const text = await targetPage
+
+        const text = await page
           .locator(selector)
           .first()
-          .innerText({ timeout: 7000 });
+          .innerText({ timeout: 5000 });
 
-        if (text && text.trim().length > content.length) {
+        if (
+          text &&
+          text.trim().length > content.length
+        ) {
+
           content = text.trim();
           debugSelector = selector;
+
         }
+
       } catch (e) {}
+
     }
 
     const noSpaceText = content.replace(/\s/g, "");
@@ -136,6 +185,7 @@ app.post("/search", async (req, res) => {
       targetType,
       rank: 1,
       url: topUrl,
+      mobileUrl,
       title,
       content,
       contentLength: content.length,
@@ -146,19 +196,24 @@ app.post("/search", async (req, res) => {
     });
 
   } catch (error) {
+
     res.status(500).json({
       success: false,
       error: error.message
     });
+
   } finally {
+
     if (browser) {
       await browser.close();
     }
+
   }
+
 });
 
 const PORT = process.env.PORT || 8080;
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`PLAYWRIGHT SERVER RUNNING ON ${PORT}`);
+  console.log(`PLAYWRIGHT MOBILE BLOG PARSER RUNNING ON ${PORT}`);
 });
