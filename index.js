@@ -2,41 +2,108 @@ const express = require("express");
 const { chromium } = require("playwright");
 
 const app = express();
-
 app.use(express.json());
 
 app.get("/", (req, res) => {
-  res.send("PLAYWRIGHT MOBILE BLOG PARSER RUNNING");
+  res.send("PLAYWRIGHT HTML PARSER RUNNING");
 });
+
+function normalize(url) {
+  return (url || "")
+    .toString()
+    .trim()
+    .replace(/&amp;/g, "&")
+    .replace(/^http:\/\//, "https://")
+    .replace(/[?#].*$/, "")
+    .replace(/\/$/, "");
+}
+
+function cleanText(text) {
+  return (text || "")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 function countKeyword(text, keyword) {
   if (!keyword) return 0;
 
   const safeKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
   return (text.match(new RegExp(safeKeyword, "g")) || []).length;
 }
 
-function convertToMobileBlog(url) {
+function parseNaverBlogHtml(html) {
+  const elements = [];
 
-  const match = url.match(
-    /^https:\/\/blog\.naver\.com\/([^\/]+)\/(\d+)$/
+  const titleTags = html.matchAll(
+    /<[^>]*class="[^"]*se-title-text[^"]*"[^>]*>([\s\S]*?)<\/[^>]+>/g
   );
 
-  if (!match) return url;
+  for (const match of titleTags) {
+    const text = cleanText(match[1]);
+    if (text) elements.push(`^^^${text}`);
+  }
 
-  const blogId = match[1];
-  const logNo = match[2];
+  const quotationTags = html.matchAll(
+    /<[^>]*class="[^"]*se-section-quotation[^"]*"[^>]*>([\s\S]*?)<\/div>/g
+  );
 
-  return `https://m.blog.naver.com/${blogId}/${logNo}`;
+  for (const match of quotationTags) {
+    const text = cleanText(match[1]);
+    if (text) elements.push(`^^^${text}`);
+  }
+
+  const sectionTags = html.matchAll(
+    /<[^>]*class="[^"]*se-section-text[^"]*"[^>]*>([\s\S]*?)<\/div>/g
+  );
+
+  for (const match of sectionTags) {
+    const inner = match[1];
+
+    const pTags = inner.matchAll(
+      /<p[^>]*class="[^"]*se-text-paragraph[^"]*"[^>]*>([\s\S]*?)<\/p>/g
+    );
+
+    const lines = [];
+
+    for (const p of pTags) {
+      const text = cleanText(p[1]);
+      if (text) lines.push(text);
+    }
+
+    const combined = lines.join(" ").trim();
+
+    if (combined) {
+      elements.push(`|||${combined}`);
+    }
+  }
+
+  const tableTags = html.matchAll(
+    /<[^>]*class="[^"]*se-section-table[^"]*"[^>]*>/g
+  );
+
+  for (const match of tableTags) {
+    elements.push("###TABLE###");
+  }
+
+  const content = elements.join("");
+
+  return {
+    content,
+    paragraph_count: elements.filter((e) => e.startsWith("|||")).length,
+    heading_count: elements.filter((e) => e.startsWith("^^^")).length,
+    table_count: elements.filter((e) => e.startsWith("###")).length
+  };
 }
 
 app.post("/search", async (req, res) => {
-
   let browser;
 
   try {
-
     const keyword = req.body.keyword || "";
     const targetType = (req.body.targetType || "blog").toLowerCase();
 
@@ -47,10 +114,10 @@ app.post("/search", async (req, res) => {
 
     const page = await browser.newPage({
       userAgent:
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 Version/16.0 Mobile/15E148 Safari/604.1",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
       viewport: {
-        width: 390,
-        height: 844
+        width: 1366,
+        height: 900
       }
     });
 
@@ -66,118 +133,55 @@ app.post("/search", async (req, res) => {
     await page.waitForTimeout(3000);
 
     const links = await page.$$eval("a", (els, targetType) => {
-
       return els
         .map((el) => el.href)
         .filter((href) => {
-
           if (!href) return false;
 
           if (targetType === "blog") {
-
             return (
-              href.includes("blog.naver.com/") &&
-              /\/\d+/.test(href)
+              /^https:\/\/blog\.naver\.com\/[^\/]+\/\d+/.test(href) ||
+              /^https:\/\/m\.blog\.naver\.com\/[^\/]+\/\d+/.test(href)
             );
-
           }
 
           if (targetType === "cafe") {
-
-            return (
-              href.includes("cafe.naver.com/") &&
-              /\/\d+/.test(href)
-            );
-
+            return /^https:\/\/cafe\.naver\.com\/[^\/]+\/\d+/.test(href);
           }
 
           return false;
-
         });
-
     }, targetType);
 
-    const uniqueLinks = [...new Set(links)];
-
+    const uniqueLinks = [...new Set(links.map(normalize))];
     const topUrl = uniqueLinks[0];
 
     if (!topUrl) {
-
       return res.json({
         success: false,
+        keyword,
+        targetType,
         message: "상위 링크를 찾지 못했습니다."
       });
-
     }
 
-    const mobileUrl = convertToMobileBlog(topUrl);
-
-    await page.goto(mobileUrl, {
+    await page.goto(topUrl, {
       waitUntil: "networkidle",
       timeout: 60000
     });
 
-    await page.waitForTimeout(5000);
+    await page.waitForTimeout(3000);
 
-    let title = "";
-    let content = "";
-    let debugSelector = "";
+    const frame = page.frame({ name: "mainFrame" });
+    const targetPage = frame || page;
 
-    try {
+    const html = await targetPage.content();
 
-      title = await page
-        .locator(".se_textarea")
-        .first()
-        .innerText({ timeout: 5000 });
+    const parsed = parseNaverBlogHtml(html);
 
-    } catch (e) {
+    const pageTitle = await targetPage.title().catch(() => "");
 
-      try {
-
-        title = await page.title();
-
-      } catch (e2) {}
-
-    }
-
-    const selectors = [
-      ".se-main-container",
-      ".post_ct",
-      ".se_component_wrap",
-      ".post_view",
-      ".end_container",
-      "body"
-    ];
-
-    for (const selector of selectors) {
-
-      try {
-
-        const text = await page
-          .locator(selector)
-          .first()
-          .innerText({ timeout: 5000 });
-
-        if (
-          text &&
-          text.trim().length > content.length
-        ) {
-
-          content = text.trim();
-          debugSelector = selector;
-
-        }
-
-      } catch (e) {}
-
-    }
-
-    const noSpaceText = content.replace(/\s/g, "");
-
-    const paragraphs = content
-      .split(/\n{2,}/)
-      .map((p) => p.trim())
-      .filter(Boolean);
+    const noSpaceText = parsed.content.replace(/\s/g, "");
 
     res.json({
       success: true,
@@ -185,35 +189,29 @@ app.post("/search", async (req, res) => {
       targetType,
       rank: 1,
       url: topUrl,
-      mobileUrl,
-      title,
-      content,
-      contentLength: content.length,
+      title: pageTitle,
+      content: parsed.content,
+      contentLength: parsed.content.length,
       noSpaceLength: noSpaceText.length,
-      paragraphCount: paragraphs.length,
-      keywordCount: countKeyword(content, keyword),
-      debugSelector
+      paragraphCount: parsed.paragraph_count,
+      headingCount: parsed.heading_count,
+      tableCount: parsed.table_count,
+      keywordCount: countKeyword(parsed.content, keyword)
     });
-
   } catch (error) {
-
     res.status(500).json({
       success: false,
       error: error.message
     });
-
   } finally {
-
     if (browser) {
       await browser.close();
     }
-
   }
-
 });
 
 const PORT = process.env.PORT || 8080;
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`PLAYWRIGHT MOBILE BLOG PARSER RUNNING ON ${PORT}`);
+  console.log(`PLAYWRIGHT HTML PARSER RUNNING ON ${PORT}`);
 });
