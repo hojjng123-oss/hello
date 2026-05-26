@@ -8,6 +8,13 @@ app.get("/", (req, res) => {
   res.send("PLAYWRIGHT SERVER RUNNING");
 });
 
+function countKeyword(text, keyword) {
+  if (!keyword) return 0;
+
+  const safeKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return (text.match(new RegExp(safeKeyword, "g")) || []).length;
+}
+
 app.post("/search", async (req, res) => {
   let browser;
 
@@ -20,14 +27,18 @@ app.post("/search", async (req, res) => {
       args: ["--no-sandbox", "--disable-setuid-sandbox"]
     });
 
-    const page = await browser.newPage();
+    const page = await browser.newPage({
+      userAgent:
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+      viewport: { width: 1366, height: 900 }
+    });
 
     const searchUrl =
       "https://search.naver.com/search.naver?query=" +
       encodeURIComponent(keyword);
 
     await page.goto(searchUrl, {
-      waitUntil: "domcontentloaded",
+      waitUntil: "networkidle",
       timeout: 60000
     });
 
@@ -63,49 +74,61 @@ app.post("/search", async (req, res) => {
     if (!topUrl) {
       return res.json({
         success: false,
+        keyword,
+        targetType,
         message: "상위 링크를 찾지 못했습니다."
       });
     }
 
     await page.goto(topUrl, {
-      waitUntil: "domcontentloaded",
+      waitUntil: "networkidle",
       timeout: 60000
     });
 
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(5000);
 
     const frame = page.frame({ name: "mainFrame" });
-
     const targetPage = frame || page;
 
     let title = "";
     let content = "";
+    let debugSelector = "";
 
     try {
-      title = await targetPage.locator(".se-title-text").first().innerText({ timeout: 5000 });
-    } catch (e) {
       title = await targetPage.title();
+    } catch (e) {
+      title = "";
     }
 
-    try {
-      content = await targetPage.locator(".se-main-container").first().innerText({ timeout: 5000 });
-    } catch (e) {
+    const selectors = [
+      ".se-main-container",
+      "#postViewArea",
+      ".se_component_wrap",
+      ".post-view",
+      ".post_ct",
+      "body"
+    ];
+
+    for (const selector of selectors) {
       try {
-        content = await targetPage.locator("#postViewArea").first().innerText({ timeout: 5000 });
-      } catch (e2) {
-        content = "";
-      }
+        const text = await targetPage
+          .locator(selector)
+          .first()
+          .innerText({ timeout: 7000 });
+
+        if (text && text.trim().length > content.length) {
+          content = text.trim();
+          debugSelector = selector;
+        }
+      } catch (e) {}
     }
 
     const noSpaceText = content.replace(/\s/g, "");
+
     const paragraphs = content
       .split(/\n{2,}/)
       .map((p) => p.trim())
       .filter(Boolean);
-
-    const keywordCount = keyword
-      ? (content.match(new RegExp(keyword, "g")) || []).length
-      : 0;
 
     res.json({
       success: true,
@@ -118,7 +141,8 @@ app.post("/search", async (req, res) => {
       contentLength: content.length,
       noSpaceLength: noSpaceText.length,
       paragraphCount: paragraphs.length,
-      keywordCount
+      keywordCount: countKeyword(content, keyword),
+      debugSelector
     });
 
   } catch (error) {
@@ -127,7 +151,9 @@ app.post("/search", async (req, res) => {
       error: error.message
     });
   } finally {
-    if (browser) await browser.close();
+    if (browser) {
+      await browser.close();
+    }
   }
 });
 
